@@ -90,7 +90,7 @@ The tool should return 1-2 sentences suggesting potential style combinations the
 
 **What happens if it fails or returns nothing:**
 
-If this is empty or any error occurs, the tool will return the `str` `None` so we can still make the fit card. Depending on the reason why it failed, text will be prompt to the user on how to get this tool to work (e.g., "Try adding more items into the wardrobe file" , "Couldn't generate a suggestion, please try again in a moment").
+If the wardrobe is empty, offer general styling advice for the item rather than raising an exception or returning an empty string. The tool still calls the LLM, but prompts it for general styling ideas (what kinds of pieces pair well, what vibe the item suits) instead of referencing specific wardrobe items. If the LLM call itself raises an exception, the tool returns `None` so we can still make the fit card, and a message is shown to the user (e.g., "Couldn't generate a suggestion, please try again in a moment").
 
 ---
 
@@ -138,7 +138,7 @@ We need the query from the user. We will get `description`, `size`, and `max_pri
 
 After `search_listings` runs, we check whether an listing was found or not. If there was no item found, set an error message in the session and return early = "We could not find a listing that matched your initial prompt, please try again or increase your price". If a listing is found, we make the `new_item` = results[0] and proceed to `suggest_outfit`.
 
-With the `new_item` we can move on to suggest an outfit paragraph based on the clothing inside the wardrobe file. If the wardrobe is empty, an error message in the session should run letting the user know "No outfit could be suggested, try adding clothes into your wardrobe file" and `suggest_outfit` should return `None`. If the wardrobe file is not empty, then we simply select the item that would match the piece and create a 1-3 sentence description of the suggested outfit.
+With the `new_item` we can move on to suggest an outfit paragraph based on the clothing inside the wardrobe file. If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item (rather than returning an empty string), so the user still gets a useful suggestion and we can prompt them to add clothes for more tailored results. If the wardrobe file is not empty, then we simply select the item that would match the piece and create a 1-3 sentence description of the suggested outfit.
 
 Finally, with the `new_item` and the `suggest_outfit`, we can create a 1-3 sentence shareable `fit_card` that describes the vibe of the `new_item` and also how it will pair well with the `suggest_outfit`. If `suggest_outfit` raised an error or exception, than we will continue to write a `fit_card` but simply stating how the `new_item` was a good find.
 
@@ -166,7 +166,7 @@ The session tracks the following specific keys:
 
 - `session["new_item"]`: Stores the dictionary returned by search_listings.
 
-- `session["outfit_suggestion"]`: Stores the string returned by suggest_outfit (or None if the tool fails/wardrobe is empty).
+- `session["outfit_suggestion"]`: Stores the string returned by suggest_outfit (or None if the LLM call fails).
 
 - `session["error"]`: Stores any fatal error messages that require the loop to terminate early.
 
@@ -190,7 +190,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
 | search_listings | No results match the query returns `[]` | Session error will rise and return early so no other tools are called. We will prompt the user to input a new query: "Try being more descriptive or increasing the price". |
-| suggest_outfit | Wardrobe is empty, or LLM call raises an exception| If there is simply not enough items in the wardrobe, or no item can be combined with the `new_item`, then we prompt the user to "Try adding more items into wardrobe file for this feature to work" and set `suggest_outfit` to return `None` and move on to `create_fit_card`. If an LLM call is raised, we record it in `session["error"]` and load a message in the UI for the user saying: "Couldn't generate an outfit - `suggest_outfit` has been set to `None` for now. Try again in a moment". |
+| suggest_outfit | Wardrobe is empty, or LLM call raises an exception| If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item rather than returning an empty string, and we prompt the user to "Try adding more items into wardrobe file for more tailored suggestions" then move on to `create_fit_card`. If an LLM call exception is raised, we record it in `session["error"]` and set `suggest_outfit` to return `None`, loading a message in the UI for the user saying: "Couldn't generate an outfit - `suggest_outfit` has been set to `None` for now. Try again in a moment". |
 | create_fit_card | Outfit input is missing or incomplete | since `suggest_outfit` is returns `None` we will default andsimply create a short caption for the `new_item` using the `description`, `style_tags`, `max_price`, and `platform` to create a caption that captures the 'vibe' of the item |
 
 ---
@@ -261,11 +261,11 @@ Tool 1: `search_listings`
 
 Tool 2: `suggest_outfit`
 
-**AI Tool & Input**: I will feed the AI the Tool 2 spec, as well as the wardrobe schema structure from `data/wardrobe_schema.json`. I will be noting that it must use Groq's `llama-3.3-70b-versatile` model. I will explicitly prompt it: "If wardrobe['items'] is empty, do not call the LLM; return `None` and log a warning."
+**AI Tool & Input**: I will feed the AI the Tool 2 spec, as well as the wardrobe schema structure from `data/wardrobe_schema.json`. I will be noting that it must use Groq's `llama-3.3-70b-versatile` model. I will explicitly prompt it: "If wardrobe['items'] is empty, offer general styling advice for the item rather than raising an exception or returning an empty string."
 
 **Expected Output**: An LLM-powered function that safely handles empty wardrobes without crashing allowing for the use of tool 3 `create_fit_card`.
 
-**Verification**: Write a pytest test passing an empty wardrobe dictionary and assert that it returns `None` safely. I'll test with both get_example_wardrobe() and get_empty_wardrobe().
+**Verification**: Write a pytest test passing an empty wardrobe dictionary and assert that it returns a non-empty styling-advice string (not an empty string and without raising). I'll test with both get_example_wardrobe() and get_empty_wardrobe().
 
 Tool 3: create_fit_card
 
@@ -321,7 +321,7 @@ suggest_outfit(new_item, wardrobe)
 
 If we have a successful listing search that means that we have the item we are looking for. Given that specific item and the user's current wardrobe, we can use the `suggest_outfit(new_item, wardrobe)` to suggests one or more complete outfit combinations. 
 
-If the wardrobe is empty, it sets the outfit to `None` and passes that along to Step 3 so the user still gets a fit card. Since `None` will still pass, we want to tell the user how to use this feature: "No outfit suggestion could be generated. Try adding more items into your wardrobe". We need to route that specific warning message to the Outfit Suggestion Panel (so the user sees it in Gradio) if `session["outfit_suggestion"]` evaluates to `None`.
+If the wardrobe is empty, `suggest_outfit` returns general styling advice for the item (rather than `None`) so the user still gets a useful suggestion and a fit card. Alongside it we tell the user how to get more tailored results: "Add more items into your wardrobe for outfit suggestions that use your own pieces." We route that prompt to the Outfit Suggestion Panel in Gradio.
 
 **Step 3:**
 create_fit_card(outfit, new_item)
