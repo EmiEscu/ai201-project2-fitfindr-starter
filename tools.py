@@ -208,7 +208,14 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
             temperature=0.7,
             max_tokens=200,
         )
-        return response.choices[0].message.content.strip()
+        advice = response.choices[0].message.content.strip()
+        # For the empty-wardrobe case, nudge the user toward richer results.
+        if not items:
+            advice += (
+                "\n\nFor more personalized suggestions, "
+                "try filling up your wardrobe file."
+            )
+        return advice
     except Exception as exc:
         logger.warning("suggest_outfit LLM call failed: %s", exc)
         return None
@@ -225,9 +232,9 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         new_item: The listing dict for the thrifted item.
 
     Returns:
-        A 2–4 sentence string usable as an Instagram/TikTok caption.
-        If outfit is empty or missing, return a descriptive error message
-        string — do NOT raise an exception.
+        A 1–3 sentence string usable as an Instagram/TikTok caption.
+        If outfit is empty or missing, do NOT raise an exception — instead
+        generate a creative caption focused entirely on the new_item.
 
     The caption should:
     - Feel casual and authentic (like a real OOTD post, not a product description)
@@ -236,12 +243,73 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
     - Sound different each time for different inputs (use higher LLM temperature)
 
     TODO:
-        1. Guard against an empty or whitespace-only outfit string.
-        2. Build a prompt that gives the LLM the item details and the outfit,
-           and asks for a caption matching the style guidelines above.
-        3. Call the LLM and return the response.
+        1. Detect an empty or whitespace-only outfit string and, if so, build a
+           fallback prompt focused only on the new_item (no wardrobe pairing).
+        2. Otherwise build a prompt that gives the LLM the item details and the
+           outfit, and asks for a caption matching the style guidelines above.
+        3. Call the LLM (higher temperature for variety) and return the response.
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # Item details every caption needs (name, price, platform) plus vibe cues.
+    title = new_item.get("title", "this find")
+    price = new_item.get("price")
+    price_str = f"${price:.0f}" if isinstance(price, (int, float)) else "a steal"
+    platform = new_item.get("platform", "online")
+    style_tags = ", ".join(new_item.get("style_tags", [])) or "one-of-a-kind"
+    colors = ", ".join(new_item.get("colors", [])) or "great"
+    description = new_item.get("description", "")
+
+    item_details = (
+        f"- Name: {title}\n"
+        f"- Price: {price_str}\n"
+        f"- Platform: {platform}\n"
+        f"- Colors: {colors}\n"
+        f"- Style: {style_tags}\n"
+        f"- Description: {description}"
+    )
+
+    # 1. Empty/whitespace-only outfit → caption focused only on the new item.
+    if not outfit or not outfit.strip():
+        logger.warning("create_fit_card called without an outfit suggestion; "
+                       "writing a caption for the item alone.")
+        prompt = (
+            "Write a casual, authentic 1-3 sentence social media caption (think "
+            "Instagram/TikTok OOTD post) for this secondhand fashion find:\n\n"
+            f"{item_details}\n\n"
+            "Capture the vibe of the piece and naturally mention its name, price, "
+            "and the platform it's from (each once). Sound like a real person "
+            "hyping a great thrift score — not a product listing. Be creative and "
+            "fresh. Return only the caption text."
+        )
+    else:
+        # 2. Outfit available → caption that ties the item to the styling idea.
+        prompt = (
+            "Write a casual, authentic 1-3 sentence social media caption (think "
+            "Instagram/TikTok OOTD post) for this secondhand fashion find:\n\n"
+            f"{item_details}\n\n"
+            f"Styling idea to weave in: {outfit.strip()}\n\n"
+            "Capture the vibe, naturally mention the item's name, price, and the "
+            "platform it's from (each once), and hint at how it pairs with the "
+            "styling idea above. Sound like a real person hyping a great thrift "
+            "score — not a product listing. Be creative and fresh. Return only "
+            "the caption text."
+        )
+
+    # 3. Call the LLM with a higher temperature so captions vary each run.
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9,
+            max_tokens=160,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.warning("create_fit_card LLM call failed: %s", exc)
+        # Last-resort caption so the UI always has something shareable.
+        return (
+            f"Just scored this {title} for {price_str} on {platform} — "
+            "obsessed already."
+        )
