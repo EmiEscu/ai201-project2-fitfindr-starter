@@ -221,12 +221,16 @@ flowchart TD
     
     %% Decision 2: Outfit Generation
     T2 --> Dec2{Is the wardrobe empty?}
-    
-    Dec2 -- Yes --> Advice["suggest_outfit returns general styling advice string; save to session and show in panel"] --> T3[Call Tool 3: create_fit_card]
-    Dec2 -- No --> Dec2b{Did the LLM call succeed?}
-    Dec2b -- No --> FailT2["suggest_outfit returns None; set session error and show warning"] --> T3
-    Dec2b -- Yes --> SaveT2[Save real wardrobe-based outfit to session] --> T3
-    
+
+    Dec2 -- Yes --> PromptA[Build general styling advice prompt]
+    Dec2 -- No --> PromptB[Build wardrobe-based outfit prompt]
+    PromptA --> LLM[Call the LLM]
+    PromptB --> LLM
+
+    LLM --> Dec2b{Did the LLM call succeed?}
+    Dec2b -- No --> FailT2["suggest_outfit returns None; set session error and show warning"] --> T3[Call Tool 3: create_fit_card]
+    Dec2b -- Yes --> SaveT2["Save suggest_outfit result to session and show in panel"] --> T3
+
     %% Decision 3: Fit Card Customization
     T3 --> Dec3{"Is there a real wardrobe-based outfit? (wardrobe had items AND suggest_outfit succeeded)"}
     
