@@ -18,7 +18,61 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ───────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract a search description, optional size, and optional max_price from a
+    natural-language query using lightweight regex rules (no LLM call — keeps
+    parsing deterministic, free, and easy to test).
+
+    Returns:
+        {"description": str, "size": str | None, "max_price": float | None}
+    """
+    text = query or ""
+
+    # --- max_price: a number after a price cue (under/below/...), else "$NN" ---
+    price_match = re.search(
+        r"(?:under|below|less than|max(?:imum)?|up to|<)\s*\$?\s*(\d+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", text)
+    max_price = float(price_match.group(1)) if price_match else None
+
+    # --- size: prefer explicit "size X"; else a waist token (W27) or a
+    # multi-letter size (XXS/XS/XL/XXL). Single letters S/M/L are only honored
+    # via the "size X" phrasing to avoid matching them inside ordinary words. ---
+    size = None
+    size_match = re.search(r"\bsize\s+([A-Za-z0-9/]+)", text, re.IGNORECASE)
+    if size_match:
+        size = size_match.group(1)
+    else:
+        token_match = re.search(r"\b(W\d{1,3}|XXS|XS|XXL|XL)\b", text, re.IGNORECASE)
+        if token_match:
+            size = token_match.group(1)
+
+    # --- description: the query with the matched size/price phrases removed,
+    # so they don't pollute the keyword search in search_listings. ---
+    description = text
+    if price_match:
+        description = description.replace(price_match.group(0), " ")
+    if size_match:
+        description = description.replace(size_match.group(0), " ")
+    elif size:
+        description = re.sub(
+            rf"\b{re.escape(size)}\b", " ", description, flags=re.IGNORECASE
+        )
+    description = re.sub(r"[,;]+", " ", description)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +146,50 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session — the single source of truth for this interaction.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into description / size / max_price (regex-based).
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3: search listings with the parsed parameters.
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+
+    # Branch: no matches → set a fatal error and return early. We do NOT call
+    # suggest_outfit / create_fit_card when there's nothing to style.
+    if not session["search_results"]:
+        desc = parsed["description"] or query
+        session["error"] = (
+            f"No listings matched '{desc}'. "
+            "Try a different description or raising your budget."
+        )
+        return session
+
+    # Step 4: select the top (most relevant) result.
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: suggest an outfit. Returns a real wardrobe-based outfit, general
+    # styling advice (empty wardrobe), or None (LLM call failed).
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], wardrobe
+    )
+
+    # Step 6: build the fit card. Only weave a REAL wardrobe-based outfit into
+    # the caption — i.e. the wardrobe had items AND suggest_outfit succeeded.
+    # For an empty wardrobe (general advice) or a failed suggest_outfit (None),
+    # pass outfit=None so create_fit_card writes an item-only caption.
+    wardrobe_has_items = bool(wardrobe and wardrobe.get("items"))
+    fit_outfit = (
+        session["outfit_suggestion"]
+        if wardrobe_has_items and session["outfit_suggestion"]
+        else None
+    )
+    session["fit_card"] = create_fit_card(fit_outfit, session["selected_item"])
+
+    # Step 7: return the completed session.
     return session
 
 

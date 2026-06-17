@@ -20,6 +20,27 @@ from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 # ── query handler ─────────────────────────────────────────────────────────────
 
+def _format_listing(item: dict) -> str:
+    """Format a listing dict into a readable block for the listing panel."""
+    colors = ", ".join(item.get("colors", []))
+    tags = ", ".join(item.get("style_tags", []))
+    brand = item.get("brand") or "—"
+    lines = [
+        item.get("title", "Untitled listing"),
+        "",
+        f"Price:     ${item.get('price', 0):.2f}",
+        f"Size:      {item.get('size', 'n/a')}",
+        f"Condition: {item.get('condition', 'n/a')}",
+        f"Brand:     {brand}",
+        f"Platform:  {item.get('platform', 'n/a')}",
+        f"Colors:    {colors or 'n/a'}",
+        f"Style:     {tags or 'n/a'}",
+        "",
+        item.get("description", ""),
+    ]
+    return "\n".join(lines)
+
+
 def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     """
     Called by Gradio when the user submits a query.
@@ -43,8 +64,33 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    # 1. Guard against an empty query.
+    if not user_query or not user_query.strip():
+        return ("Please enter a description of what you're looking for.", "", "")
+
+    # 2. Select the wardrobe based on the radio choice.
+    if wardrobe_choice == "Empty wardrobe (new user)":
+        wardrobe = get_empty_wardrobe()
+    else:
+        wardrobe = get_example_wardrobe()
+
+    # 3. Run the planning loop.
+    session = run_agent(user_query, wardrobe)
+
+    # 4. Fatal error (e.g. no listings matched) → show it in the first panel only.
+    if session["error"]:
+        return (session["error"], "", "")
+
+    # 5. Map the session results to the three panels. A None outfit_suggestion
+    # means suggest_outfit's LLM call failed — show a friendly note in the
+    # outfit panel rather than a blank box. The fit card is always present.
+    listing_text = _format_listing(session["selected_item"])
+    outfit_text = session["outfit_suggestion"] or (
+        "Couldn't generate an outfit suggestion right now — "
+        "please try again in a moment."
+    )
+    fit_card = session["fit_card"] or ""
+    return (listing_text, outfit_text, fit_card)
 
 
 # ── interface ─────────────────────────────────────────────────────────────────
