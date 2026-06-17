@@ -90,7 +90,7 @@ The tool should return 1-2 sentences suggesting potential style combinations the
 
 **What happens if it fails or returns nothing:**
 
-If the wardrobe is empty, offer general styling advice for the item rather than raising an exception or returning an empty string. The tool still calls the LLM, but prompts it for general styling ideas (what kinds of pieces pair well, what vibe the item suits) instead of referencing specific wardrobe items. If the LLM call itself raises an exception, the tool returns `None` so we can still make the fit card, and a message is shown to the user (e.g., "Couldn't generate a suggestion, please try again in a moment").
+If the wardrobe is empty, offer general styling advice for the item rather than raising an exception or returning an empty string. The tool still calls the LLM, but prompts it for general styling ideas (what kinds of pieces pair well, what vibe the item suits) instead of referencing specific wardrobe items. The returned advice string ends with the line "For more personalized suggestions, try filling up your wardrobe file." so the user knows how to get tailored results. If the LLM call itself raises an exception, the tool returns `None` so we can still make the fit card, and a message is shown to the user (e.g., "Couldn't generate a suggestion, please try again in a moment").
 
 ---
 
@@ -119,7 +119,7 @@ This will return a 1-3 sentence caption that will include multiple things:
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the outfit data is incomplete? -->
 
-If the outfit parameter is `None`, the tool does not raise an error. Instead, it adapts and generates a creative caption focused entirely on the `new_item`.
+If the outfit parameter is `None`, the tool does not raise an error. Instead, it adapts and generates a creative caption focused entirely on the `new_item`. The empty-wardrobe case (where `suggest_outfit` returned general styling advice instead of a real outfit) is treated the same way: the agent calls `create_fit_card` with `outfit=None`, so the tool produces an item-only caption and the general advice is not woven into the caption.
 
 What it will include:
 
@@ -140,7 +140,7 @@ After `search_listings` runs, we check whether an listing was found or not. If t
 
 With the `new_item` we can move on to suggest an outfit paragraph based on the clothing inside the wardrobe file. If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item (rather than returning an empty string), so the user still gets a useful suggestion and we can prompt them to add clothes for more tailored results. If the wardrobe file is not empty, then we simply select the item that would match the piece and create a 1-3 sentence description of the suggested outfit.
 
-Finally, with the `new_item` and the `suggest_outfit`, we can create a 1-3 sentence shareable `fit_card` that describes the vibe of the `new_item` and also how it will pair well with the `suggest_outfit`. If `suggest_outfit` raised an error or exception, than we will continue to write a `fit_card` but simply stating how the `new_item` was a good find.
+Finally we create a 1-3 sentence shareable `fit_card`. We only weave the outfit into the caption when it is a real wardrobe-based outfit (the wardrobe had items AND `suggest_outfit` succeeded). In two cases the agent instead calls `create_fit_card` with `outfit=None`, producing an item-only caption that just hypes the `new_item`: (1) the wardrobe was empty, so `suggest_outfit` only returned general styling advice — that advice is still shown in the Outfit Suggestion Panel but is NOT fed into the fit card; and (2) `suggest_outfit` returned `None` because the LLM call failed.
 
 Order: 
 
@@ -191,7 +191,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 |------|-------------|----------------|
 | search_listings | No results match the query returns `[]` | Session error will rise and return early so no other tools are called. We will prompt the user to input a new query: "Try being more descriptive or increasing the price". |
 | suggest_outfit | Wardrobe is empty, or LLM call raises an exception| If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item rather than returning an empty string, and we prompt the user to "Try adding more items into wardrobe file for more tailored suggestions" then move on to `create_fit_card`. If an LLM call exception is raised, we record it in `session["error"]` and set `suggest_outfit` to return `None`, loading a message in the UI for the user saying: "Couldn't generate an outfit - `suggest_outfit` has been set to `None` for now. Try again in a moment". |
-| create_fit_card | Outfit input is missing or incomplete | since `suggest_outfit` is returns `None` we will default andsimply create a short caption for the `new_item` using the `description`, `style_tags`, `max_price`, and `platform` to create a caption that captures the 'vibe' of the item |
+| create_fit_card | Outfit input is missing or incomplete | since `suggest_outfit` is returns `None` we will default andsimply create a short caption for the `new_item` using the `description`, `style_tags`, `price`, and `platform` to create a caption that captures the 'vibe' of the item |
 
 ---
 
@@ -220,16 +220,18 @@ flowchart TD
     Dec1 -- Yes --> SaveT1[Save data to session state as new_item] --> T2[Call Tool 2: suggest_outfit]
     
     %% Decision 2: Outfit Generation
-    T2 --> Dec2{Is wardrobe empty\nor LLM exception raised?}
+    T2 --> Dec2{Is the wardrobe empty?}
     
-    Dec2 -- Yes --> FailT2[Set outfit string to None\n& Prompt user warning] --> T3[Call Tool 3: create_fit_card]
-    Dec2 -- No --> SaveT2[Save outfit description to session state] --> T3
+    Dec2 -- Yes --> Advice["suggest_outfit returns general styling advice string; save to session and show in panel"] --> T3[Call Tool 3: create_fit_card]
+    Dec2 -- No --> Dec2b{Did the LLM call succeed?}
+    Dec2b -- No --> FailT2["suggest_outfit returns None; set session error and show warning"] --> T3
+    Dec2b -- Yes --> SaveT2[Save real wardrobe-based outfit to session] --> T3
     
     %% Decision 3: Fit Card Customization
-    T3 --> Dec3{Is outfit suggestion None?}
+    T3 --> Dec3{"Is there a real wardrobe-based outfit? (wardrobe had items AND suggest_outfit succeeded)"}
     
-    Dec3 -- Yes --> Capt1[Generate adapted caption\nfor new_item only] --> UI([Final UI Display])
-    Dec3 -- No --> Capt2[Generate standard caption\nfor full outfit] --> UI
+    Dec3 -- No --> Capt1["create_fit_card called with outfit=None; generate item-only caption for new_item"] --> UI([Final UI Display])
+    Dec3 -- Yes --> Capt2["create_fit_card called with the outfit; generate standard caption for full outfit"] --> UI
 ```
 ---
 
@@ -321,12 +323,14 @@ suggest_outfit(new_item, wardrobe)
 
 If we have a successful listing search that means that we have the item we are looking for. Given that specific item and the user's current wardrobe, we can use the `suggest_outfit(new_item, wardrobe)` to suggests one or more complete outfit combinations. 
 
-If the wardrobe is empty, `suggest_outfit` returns general styling advice for the item (rather than `None`) so the user still gets a useful suggestion and a fit card. Alongside it we tell the user how to get more tailored results: "Add more items into your wardrobe for outfit suggestions that use your own pieces." We route that prompt to the Outfit Suggestion Panel in Gradio.
+If the wardrobe is empty, `suggest_outfit` returns general styling advice for the item (rather than `None`) so the user still gets a useful suggestion and a fit card. The advice string ends with the line "For more personalized suggestions, try filling up your wardrobe file." so the user knows how to get tailored results. We route this advice to the Outfit Suggestion Panel in Gradio. Note: because this is general advice and not a real wardrobe-based outfit, it is NOT woven into the fit card — see Step 3, where `create_fit_card` is called with `outfit=None` and produces an item-only caption.
 
 **Step 3:**
 create_fit_card(outfit, new_item)
 
 With the results of both step 1 and step 2, we can generate a short, shareable description of a complete outfit — the kind of thing someone would caption an Instagram post with. Must produce something different each time for different inputs. The output of this fit card will be the name of the item price as well as the platform. And to control how random these fit cards are we will simply increase the LLM temperature to encourages more creative and varied responses.
+
+The fit card only weaves in a real wardrobe-based outfit. If the wardrobe was empty (Step 2 only produced general styling advice) or `suggest_outfit` returned `None`, the agent calls `create_fit_card` with `outfit=None`, and the tool produces an item-only caption focused entirely on the `new_item`.
 
 **Final output to user:**
 <!-- What does the user actually see at the end? -->
