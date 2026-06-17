@@ -61,7 +61,7 @@ This is an example for a query such as "I'm looking for high-waisted vintage den
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if no listings match? -->
-If this tool fails, the agent sets a session["error"] and outputs "No item for 'item_description' was found. Please try a new description or raising the budget". The agent will not call suggest_outfit since there is no listing that the tool can reference.
+If this tool fails, the agent sets a session["error"] and outputs "No listings matched '<description>'. Try a different description or raising your budget." The agent will not call suggest_outfit since there is no listing that the tool can reference.
 
 ---
 
@@ -136,7 +136,7 @@ What it will include:
 
 We need the query from the user. We will get `description`, `size`, and `max_price` from the query and store those attributes in a dict. 
 
-After `search_listings` runs, we check whether an listing was found or not. If there was no item found, set an error message in the session and return early = "We could not find a listing that matched your initial prompt, please try again or increase your price". If a listing is found, we make the `new_item` = results[0] and proceed to `suggest_outfit`.
+After `search_listings` runs, we check whether an listing was found or not. If there was no item found, set an error message in the session and return early = "No listings matched '<description>'. Try a different description or raising your budget." If a listing is found, we make the `new_item` = results[0] and proceed to `suggest_outfit`.
 
 With the `new_item` we can move on to suggest an outfit paragraph based on the clothing inside the wardrobe file. If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item (rather than returning an empty string), so the user still gets a useful suggestion and we can prompt them to add clothes for more tailored results. If the wardrobe file is not empty, then we simply select the item that would match the piece and create a 1-3 sentence description of the suggested outfit.
 
@@ -144,7 +144,7 @@ Finally we create a 1-3 sentence shareable `fit_card`. We only weave the outfit 
 
 Order: 
 
-1. Initialize session and Parse Query: The first thing that need to be done is create a `new_session` function that will be in charge of storing all the information gathered from the tools. Then we need to  extract `description (str)`, `size (str or NULL)`, `max_price (float or NULL)` from the query iteself. 
+1. Initialize session and Parse Query: The first thing that need to be done is create a `new_session` function that will be in charge of storing all the information gathered from the tools. Then we need to  extract `description (str)`, `size (str or NULL)`, `max_price (float or NULL)` from the query iteself. Parsing is done with lightweight regex in `_parse_query()` (no LLM, so it stays deterministic and easy to test): `max_price` comes from price cues like "under $30" or a bare "$30"; `size` comes from "size X" phrasing or a waist/multi-letter token (e.g. W27, XXS, XL); and `description` is the leftover query text with those size/price phrases stripped out so they don't pollute the keyword search.
 2. Find listing: With the parse query we retrieve the listing that closely matches the users prompt and store it inside a `dict`.
 3. Suggest outfit: We will use the `wardrobe` to find an item that would be a good fit/combination with the listing. 
 4. Return fit card: Once we have a suggested outfit, we will return a sharable fit card.
@@ -160,25 +160,33 @@ Order:
 
 The agent tracks data across the interaction using a single session dictionary (or state object) that is initialized when the user submits their query. This prevents the user from having to re-enter information at any point.
 
-The session tracks the following specific keys:
+The session tracks the following specific keys (these match the dict initialized in `_new_session()` in `agent.py`):
 
-- `session["query_params"]`: Stores the parsed description, size, and max_price.
+- `session["query"]`: The original, unmodified user query string.
 
-- `session["new_item"]`: Stores the dictionary returned by search_listings.
+- `session["parsed"]`: The parsed `description`, `size`, and `max_price` returned by `_parse_query()`.
+
+- `session["search_results"]`: The full list of matching listing dicts returned by `search_listings`.
+
+- `session["selected_item"]`: The top result (`search_results[0]`) — the dict passed into `suggest_outfit` and `create_fit_card`.
+
+- `session["wardrobe"]`: The wardrobe dict for this run.
 
 - `session["outfit_suggestion"]`: Stores the string returned by suggest_outfit (or None if the LLM call fails).
 
-- `session["error"]`: Stores any fatal error messages that require the loop to terminate early.
+- `session["fit_card"]`: The caption string returned by create_fit_card.
+
+- `session["error"]`: Stores any fatal error messages that require the loop to terminate early (currently only the no-results case).
 
 Flow of State:
 
-Once `search_listings` executes successfully, the resulting dictionary is saved to `session["new_item"]`.
+Once `search_listings` executes successfully, the full list is saved to `session["search_results"]` and the top result to `session["selected_item"]`.
 
-The agent reads `session["new_item"]` and the external `wardrobe` file, passing both directly into `suggest_outfit` without prompting the user.
+The agent reads `session["selected_item"]` and the external `wardrobe` file, passing both directly into `suggest_outfit` without prompting the user.
 
 The resulting string from `suggest_outfit` is saved to `session["outfit_suggestion"]`.
 
-Finally, the agent reads both `session["outfit_suggestion"]` and `session["new_item"]` from the state and passes them directly into `create_fit_card`.
+Finally, the agent reads `session["outfit_suggestion"]` and `session["selected_item"]` and passes them into `create_fit_card`, storing the caption in `session["fit_card"]`. Note: only a real wardrobe-based outfit is passed as the `outfit` argument — for an empty wardrobe (general advice) or a `None` from `suggest_outfit`, the agent passes `outfit=None` so the fit card is item-only.
 
 
 ---
@@ -189,8 +197,8 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query returns `[]` | Session error will rise and return early so no other tools are called. We will prompt the user to input a new query: "Try being more descriptive or increasing the price". |
-| suggest_outfit | Wardrobe is empty, or LLM call raises an exception| If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item rather than returning an empty string, and we prompt the user to "Try adding more items into wardrobe file for more tailored suggestions" then move on to `create_fit_card`. If an LLM call exception is raised, we record it in `session["error"]` and set `suggest_outfit` to return `None`, loading a message in the UI for the user saying: "Couldn't generate an outfit - `suggest_outfit` has been set to `None` for now. Try again in a moment". |
+| search_listings | No results match the query returns `[]` | Session error will rise and return early so no other tools are called. We will prompt the user with: "No listings matched '<description>'. Try a different description or raising your budget." |
+| suggest_outfit | Wardrobe is empty, or LLM call raises an exception| If the wardrobe is empty, `suggest_outfit` offers general styling advice for the item rather than returning an empty string, and we prompt the user to "Try adding more items into wardrobe file for more tailored suggestions" then move on to `create_fit_card`. If an LLM call exception is raised, `suggest_outfit` returns `None` and the agent CONTINUES (this is not a fatal `session["error"]`, which is reserved for the no-results case that ends the loop early). `session["outfit_suggestion"]` stays `None`, and `handle_query` surfaces a friendly note in the Outfit panel: "Couldn't generate an outfit suggestion right now — please try again in a moment." The fit card is still produced (item-only, since `outfit=None` is passed). |
 | create_fit_card | Outfit input is missing or incomplete | since `suggest_outfit` is returns `None` we will default andsimply create a short caption for the `new_item` using the `description`, `style_tags`, `price`, and `platform` to create a caption that captures the 'vibe' of the item |
 
 ---
@@ -217,7 +225,7 @@ flowchart TD
     
     Dec1 -- No --> Err1[Set session error message] --> EndEarly([Return Early / End Session])
     
-    Dec1 -- Yes --> SaveT1[Save data to session state as new_item] --> T2[Call Tool 2: suggest_outfit]
+    Dec1 -- Yes --> SaveT1[Save results to session: search_results and selected_item] --> T2[Call Tool 2: suggest_outfit]
     
     %% Decision 2: Outfit Generation
     T2 --> Dec2{Is the wardrobe empty?}
@@ -228,7 +236,7 @@ flowchart TD
     PromptB --> LLM
 
     LLM --> Dec2b{Did the LLM call succeed?}
-    Dec2b -- No --> FailT2["suggest_outfit returns None; set session error and show warning"] --> T3[Call Tool 3: create_fit_card]
+    Dec2b -- No --> FailT2["suggest_outfit returns None; agent continues, UI shows a friendly note in the outfit panel"] --> T3[Call Tool 3: create_fit_card]
     Dec2b -- Yes --> SaveT2["Save suggest_outfit result to session and show in panel"] --> T3
 
     %% Decision 3: Fit Card Customization
@@ -293,7 +301,7 @@ How I will use Claude for the planning loop and integration:
 
 **Expected Output**: A completed `run_agent()` function that initializes the session dictionary, parses the query, and executes the tools conditionally based on the results of `search_listings`.
 
-**Review & Verification**: Before running the code, I will manually review the generated logic to ensure it does not call `suggest_outfit` unconditionally. I will specifically check the branch where `search_listings` returns empty to verify it sets `session["error"]` and returns early. If Claude hallucinates extra state variables or tries to run tools out of order, I will manually override the code to enforce my defined session keys (new_item, outfit_suggestion, error).
+**Review & Verification**: Before running the code, I will manually review the generated logic to ensure it does not call `suggest_outfit` unconditionally. I will specifically check the branch where `search_listings` returns empty to verify it sets `session["error"]` and returns early. If Claude hallucinates extra state variables or tries to run tools out of order, I will manually override the code to enforce my defined session keys (selected_item, outfit_suggestion, error).
 
 **Task 2: Implement `handle_query()` in `app.py`**
 
@@ -301,7 +309,7 @@ How I will use Claude for the planning loop and integration:
 
 **Expected Output**: A function that unpacks the final session state and routes the strings/dictionaries to the correct UI display panels.
 
-**Review & Verification**: I will review the generated code to guarantee that no hardcoded fallback values are being injected into the UI at this stage. I will verify that `session["new_item"]` maps to the search panel, `session["outfit_suggestion"]` maps to the styling panel, and `session["fit_card"]` maps to the social media panel. Finally, I will test the integration by printing `session["new_item"]` to the terminal during a run to confirm the exact dict is passing seamlessly without re-entry.
+**Review & Verification**: I will review the generated code to guarantee that no hardcoded fallback values are being injected into the UI at this stage. I will verify that `session["selected_item"]` maps to the search panel, `session["outfit_suggestion"]` maps to the styling panel, and `session["fit_card"]` maps to the social media panel. Finally, I will test the integration by printing `session["selected_item"]` to the terminal during a run to confirm the exact dict is passing seamlessly without re-entry.
 
 
 ---
@@ -317,9 +325,9 @@ Query Parsing + search_listing(description, size, max_price)
 
 Firstly, we need to turn the user natural language query into structured components that can be understood and processed by a system, allowing for effective information retrieval and response generation. We need to extract the description=[vintage graphic tee], size="none", price=30.
 
-After having the query parsing, now we can start searching for the item the user might be interested in with a search_listing function -> search_listing(description=str, size=str,price=float), we can return a relevance-sorted list where the top item is the `session["new_item"]` item.
+After having the query parsing, now we can start searching for the item the user might be interested in with a search_listing function -> search_listing(description=str, size=str,price=float), we can return a relevance-sorted list where the top item is the `session["selected_item"]` item.
 
-If the list is empty, the session will return an error stating "No item for 'vintage graphic tee under $30' was found. Please try a new description or raising the budget." 
+If the list is empty, the session will return an error stating "No listings matched 'vintage graphic tee'. Try a different description or raising your budget." 
 
 **Step 2:**
 suggest_outfit(new_item, wardrobe)
