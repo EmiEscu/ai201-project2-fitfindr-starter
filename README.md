@@ -1,7 +1,6 @@
 # FitFindr — Starter Kit
 
-This starter kit contains everything you need to begin Project 2.
-
+## DEMO VIDEO: https://www.youtube.com/watch?v=09mIfbBeNuE
 ## What's Included
 
 ```
